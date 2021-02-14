@@ -1,0 +1,145 @@
+Tableau Links
+   https://help.tableau.com/current/server/en-us/trusted_auth.htm
+   https://help.tableau.com/current/server-linux/en-us/trusted_auth_testing.htm
+   https://help.tableau.com/current/pro/desktop/en-us/embed_dashboard.htm
+   https://kb.tableau.com/articles/howto/embedding-tableau-server-dashboards-into-a-website-without-prompting-for-credentials
+
+How to embed protected tableau dashboard into your website?
+   Due to security, All SSO doesn't allow you to embedded their SSO page into your website.
+   If your tableau is integrated with SSO/SAML, 
+       users need to login to SSO/SAML first
+       After SSO, tableau knows who you are and logged you in and create a tableau sesssion.
+
+   If you have not been login to tableau yet, and you land on a webpage with embeded protected tableau dashboard,
+   (and event if you have been logging in other SSO application), you will get a sad face page, 
+   or a page asking you to login to tableau first.  
+   this is not a good user experience since the user will need to login to tableau, and then click another link somewhere
+   on the tableau page to take you back your orignial requested page.
+  
+   You need to ask your Tableau Admin add your webserver to be a trusted server.  As a Tableau Administrator, you should never grant this permission to anyone except your Tableau Infrastructure team that manage your Tableau server.
+
+How to make the user experience better?
+
+We can't bypass the user login to tableau step.  However, if we can somehow redirect the user to their requested page after tableau authentication, that will give the user a better experience.
+
+One of the solution is to build a webpage, embedded an dummy PLEASE WAIT tableau dashboard and use a javascript to redirect back to the paged the user requested.   This can be accomplished by using trusted authentication.
+
+#!/usr/bin/perl 
+#
+#  PROGRAM:  irds-dashboard
+#  
+#  PURPOSE:  A simple Perl to generate view/embed-irds-uid-unixtime.html with trusted/token
+#            and display the irds-dashboard with returnURL passing.  This should be placed in the your website cgi folder.
+#  VERSION:  1.0
+#  USAGE:    https://website/irds-dashboard?returnURL=your-webpage-with-embedded-code
+#  Created by toai vo toaivo@stanford.edu
+#
+use strict;
+use warnings;
+use LWP::UserAgent;
+use HTTP::Request::Common;
+use CGI qw(:standard);
+
+my $query = new CGI;
+my $returnURL = $query->param('returnURL');
+
+my $EPOC = time();
+my $HOSTNAME = "https://YOUR-TABLEAU-SERVER";
+my $ENDPOINT = "https://YOUR-TABLEAU-SERVER/trusted";
+my $CGIDIR   = "/etc/apache2/cgi-bin";
+
+my $USERNAME = $ENV{'REMOTE_USER'};
+my $CLIENTIP = $ENV{'REMOTE_ADDR'};
+
+my $server_endpoint = "$ENDPOINT";
+
+my $post_data = [ username => $USERNAME, 
+                  server => $HOSTNAME,
+                  client_ip => $CLIENTIP,
+                  target_site => "IRDS" ,
+                  submit => "Submit",
+                 ];
+my $UNIQID = "${USERNAME}-$EPOC" ;
+
+my $ua = new LWP::UserAgent ;
+
+my $resp = $ua->request(POST $ENDPOINT, $post_data);
+
+if ($resp->is_success) {
+    my $token = $resp->decoded_content;
+    my @cmd   = ("$CGIDIR/genurl.sh", $token, $UNIQID, $returnURL );
+    system (@cmd);
+}
+
+print "Location: https://tabauth.stanford.edu/view/embed-irds-$UNIQID.html\n\n";
+
+SCRIPT:  embed-irds.templ
+PURPOSE: This is a template webpage with embedded tableau PLEASE WAIT dashboard and javascript auto redirect used by genurl.sh script.
+NOTES:   you replace the dashboard view path of please wait and the tableau Site based on your tableau server. 
+
+<!DOCTYPE html>
+<html>
+<head><title>Login to Tableau</title></head>
+<body>
+    <script type="text/javascript">
+        function startTimer(duration, display) {
+        var timer = duration,
+        minutes, seconds;
+        setInterval(function() {
+           minutes = parseInt(timer / 60, 10)
+           seconds = parseInt(timer % 60, 10);
+
+           minutes = minutes < 10 ? "0" + minutes : minutes;
+           seconds = seconds < 10 ? "0" + seconds : seconds;
+
+           display.textContent = minutes + ":" + seconds;
+
+         if (--timer < 0) {
+             window.location = "RETURNURL";
+             }
+           }, 1000);
+         }
+
+      window.onload = function() {
+         var fiveMinutes = 2,
+         display = document.querySelector('#time');
+         startTimer(fiveMinutes, display);
+      };
+    </script>
+
+<script type='text/javascript' src='https://YOUR-TABLEAU-SERVER/javascripts/api/viz_v1.js'></script>
+     <div class='tableauPlaceholder' style='width: 1000px; height: 827px;'>
+         <object class='tableauViz' width='1000' height='827' style='display:none;'>
+            <param name='host_url' value='https%3A%2F%2FYOUR-TABLEAU-SERVER%2F' /> 
+            <param name='embed_code_version' value='3' /> 
+            <param name='path' value='trusted/XXXXX/t/IRDS/views/PleaseWait/Dashboard1' />
+            <param name='tabs' value='no' />
+            <param name='toolbar' value='no' />
+            <param name='showAppBanner' value='false' />
+         </object>
+     </div>
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js"></script>
+<div class="timer">
+  <div class="time">
+   . <span style="color:#ffffff" id="time">0:02</span>
+  </div>
+</div>
+</body>
+</html>
+
+#!/bin/bash
+#   SCRIPT: genurl.sh
+#   PURPOSE:  generate webpage with embeded PLEASE WAIT dashboard and javascript redirect using template file.
+#             this scripted is called by the cgi/irds-dashboard script
+#
+TOKEN=$1
+UNIQID=$2
+RETURNURL=$3
+
+ROOTDOC=/var/www/html
+CGIBIN=/etc/apache2/cgi-bin
+cd $CGIBIN
+
+cat embed-irds.templ | sed "s/XXXXX/$TOKEN/g" | sed "s|RETURNURL|$RETURNURL|g" > $ROOTDOC/view/embed-irds-$UNIQID.html
+
